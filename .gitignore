@@ -6,4 +6,5 @@ venv/
 *.db-shm
 *.db-wal
 *.log
+restart.log
 .DS_Store
