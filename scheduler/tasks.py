@@ -30,19 +30,15 @@ async def check_overdue(context: ContextTypes.DEFAULT_TYPE):
 
         try:
             await context.bot.send_message(
-                chat_id=ADMIN_ID,
-                text=text,
-                parse_mode="HTML",
+                chat_id=ADMIN_ID, text=text, parse_mode="HTML",
             )
         except Exception as e:
             logger.warning("Failed to notify admin: %s", e)
 
-        if task["assignee"].startswith("@"):
+        if task.get("assignee_id"):
             try:
                 await context.bot.send_message(
-                    chat_id=task["assignee"],
-                    text=text,
-                    parse_mode="HTML",
+                    chat_id=task["assignee_id"], text=text, parse_mode="HTML",
                 )
             except Exception as e:
-                logger.warning("Failed to notify assignee %s: %s", task["assignee"], e)
+                logger.warning("Failed to notify assignee %s: %s", task["assignee_id"], e)
