@@ -1,11 +1,33 @@
-import re
 from telegram import Update
-from telegram.ext import CommandHandler, CallbackQueryHandler, ContextTypes
+from telegram.ext import (
+    CommandHandler,
+    CallbackQueryHandler,
+    MessageHandler,
+    filters,
+    ConversationHandler,
+    ContextTypes,
+)
 
 from db.crud import add_task, list_tasks, get_task, update_task_status, delete_task, list_overdue
-from bot.messages import HELP_TEXT, TASK_ADDED, TASK_DONE, TASK_NOT_FOUND, TASK_DELETED, NO_TASKS, INVALID_FORMAT, INVALID_ID, NO_OVERDUE, INVALID_DATE
+from bot.messages import (
+    HELP_TEXT,
+    TASK_ADDED,
+    TASK_DONE,
+    TASK_NOT_FOUND,
+    TASK_DELETED,
+    NO_TASKS,
+    INVALID_ID,
+    NO_OVERDUE,
+    INVALID_DATE,
+    ASK_TITLE,
+    ASK_DEADLINE,
+    ASK_ASSIGNEE,
+    CANCELLED,
+)
 from bot.keyboards import task_actions_keyboard
 from utils.date_parser import parse_deadline, format_datetime_ru
+
+TITLE, DEADLINE, ASSIGNEE = range(3)
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -18,28 +40,48 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(HELP_TEXT)
 
 
-async def add_task_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text[len("/add "):].strip()
-    parts = [p.strip() for p in re.split(r"\s*/\s*", text)]
+async def add_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data.clear()
+    await update.message.reply_text(ASK_TITLE)
+    return TITLE
 
-    if len(parts) < 3:
-        await update.message.reply_text(INVALID_FORMAT)
-        return
 
-    title, deadline_raw, assignee = parts[0], parts[1], parts[2]
-    description = parts[3] if len(parts) > 3 else ""
+async def add_title(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["title"] = update.message.text.strip()
+    await update.message.reply_text(ASK_DEADLINE)
+    return DEADLINE
 
+
+async def add_deadline(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    deadline_raw = update.message.text.strip()
     deadline = parse_deadline(deadline_raw)
     if not deadline:
         await update.message.reply_text(INVALID_DATE)
-        return
+        return DEADLINE
+    context.user_data["deadline"] = deadline
+    await update.message.reply_text(ASK_ASSIGNEE)
+    return ASSIGNEE
 
-    task_id = add_task(title, assignee, deadline, description)
+
+async def add_assignee(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    assignee = update.message.text.strip()
+    title = context.user_data["title"]
+    deadline = context.user_data["deadline"]
+
+    task_id = add_task(title, assignee, deadline)
 
     await update.message.reply_text(
         TASK_ADDED.format(id=task_id, title=title, deadline=format_datetime_ru(deadline), assignee=assignee),
         reply_markup=task_actions_keyboard(task_id),
     )
+    context.user_data.clear()
+    return ConversationHandler.END
+
+
+async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(CANCELLED)
+    context.user_data.clear()
+    return ConversationHandler.END
 
 
 async def list_tasks_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -128,10 +170,23 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 def get_handlers():
+    conv_handler = ConversationHandler(
+        entry_points=[
+            CommandHandler("add", add_start),
+            MessageHandler(filters.Regex(r"(?i)\bзадача\b"), add_start),
+        ],
+        states={
+            TITLE: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_title)],
+            DEADLINE: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_deadline)],
+            ASSIGNEE: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_assignee)],
+        },
+        fallbacks=[CommandHandler("cancel", cancel)],
+    )
+
     return [
         CommandHandler("start", start),
         CommandHandler("help", help_command),
-        CommandHandler("add", add_task_handler),
+        conv_handler,
         CommandHandler("list", list_tasks_handler),
         CommandHandler("done", done_task_handler),
         CommandHandler("delete", delete_task_handler),
