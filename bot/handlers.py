@@ -21,7 +21,7 @@ from bot.messages import (
     CANCELLED, SKIPPED_DESC, REGISTERED,
     DONE_REQUESTED, DONE_APPROVED, DONE_REJECTED, DONE_SENT_TO_ADMIN,
     NO_PENDING, NO_USERS, USER_REMOVED, USER_REMOVE_DENIED, USER_NOT_FOUND, ADMIN_ONLY,
-    NEW_TASK_NOTIFICATION,
+    NEW_TASK_NOTIFICATION, DONE_WHICH_TASK, DONE_NO_ACTIVE,
 )
 from bot.keyboards import task_actions_keyboard, approval_keyboard
 from utils.date_parser import parse_deadline, format_datetime_ru
@@ -314,6 +314,66 @@ async def pending_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+# ── Natural language done (выполнено / сделано) ──────────
+
+async def done_natural(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    tasks = list_tasks(include_done=False, user_id=user_id)
+
+    if not tasks:
+        await update.message.reply_text(DONE_NO_ACTIVE)
+        return
+
+    if len(tasks) == 1:
+        task = tasks[0]
+        await _request_done_approval(update, context, task)
+    else:
+        lines = [f"#{t['id']} — {t['title']} (⏰ {t['deadline']})" for t in tasks]
+        await update.message.reply_text(
+            DONE_WHICH_TASK + "\n" + "\n".join(lines)
+        )
+        context.user_data["awaiting_done_id"] = True
+
+    return
+
+
+async def done_natural_number(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.user_data.get("awaiting_done_id"):
+        return
+    try:
+        task_id = int(update.message.text.strip())
+    except ValueError:
+        return
+    task = get_task(task_id)
+    if not task:
+        await update.message.reply_text(TASK_NOT_FOUND.format(id=task_id))
+        return
+    context.user_data.pop("awaiting_done_id", None)
+    await _request_done_approval(update, context, task)
+
+
+async def _request_done_approval(update: Update, context: ContextTypes.DEFAULT_TYPE, task: dict):
+    task_id = task["id"]
+    user_id = update.effective_user.id
+
+    if user_id == ADMIN_ID:
+        update_task_status(task_id, "done")
+        await update.message.reply_text(TASK_DONE.format(id=task_id))
+    else:
+        update_task_status(task_id, "pending_approval")
+        await update.message.reply_text(DONE_SENT_TO_ADMIN)
+
+        text = DONE_REQUESTED.format(id=task_id, title=task["title"])
+        try:
+            await context.bot.send_message(
+                chat_id=ADMIN_ID,
+                text=text,
+                reply_markup=approval_keyboard(task_id),
+            )
+        except Exception:
+            pass
+
+
 # ── Callback (buttons) ───────────────────────────────────
 
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -430,5 +490,7 @@ def get_handlers():
         CommandHandler("pending", pending_handler),
         CommandHandler("users", users_handler),
         CommandHandler("removeuser", removeuser_handler),
+        MessageHandler(filters.Regex(r"(?i)^(выполнено|сделано|готово)$") & ~filters.COMMAND, done_natural),
+        MessageHandler(filters.Regex(r"^\d+$") & ~filters.COMMAND, done_natural_number),
         CallbackQueryHandler(button_callback),
     ]
