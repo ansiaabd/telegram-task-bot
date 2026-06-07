@@ -1,3 +1,4 @@
+import re
 from telegram import Update
 from telegram.ext import (
     CommandHandler,
@@ -43,6 +44,40 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def add_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text.strip()
+
+    # inline format: "задача / title / deadline / assignee" or "/add title / deadline / assignee"
+    parts = [p.strip() for p in re.split(r"\s*/\s*", text)]
+    # remove trigger word ("задача" or "/add")
+    if parts[0].lower().lstrip("/") in ("задача", "add"):
+        parts = parts[1:]
+
+    if len(parts) >= 3:
+        title = parts[0]
+        candidate_deadline = parse_deadline(parts[1])
+        if candidate_deadline:
+            deadline = candidate_deadline
+            assignee = parts[2]
+            description = " / ".join(parts[3:]) if len(parts) > 3 else ""
+        else:
+            title = parts[0]
+            description = parts[1]
+            if len(parts) >= 3:
+                deadline = parse_deadline(parts[2])
+                if not deadline:
+                    await update.message.reply_text(INVALID_DATE)
+                    return ConversationHandler.END
+                assignee = " / ".join(parts[3:]) if len(parts) > 3 else ""
+
+        task_id = add_task(title, assignee, deadline, description)
+        desc_text = f"📋 {description}" if description else ""
+        await update.message.reply_text(
+            TASK_ADDED.format(id=task_id, title=title, deadline=format_datetime_ru(deadline), assignee=assignee, description=desc_text),
+            reply_markup=task_actions_keyboard(task_id),
+        )
+        return ConversationHandler.END
+
+    # start conversation flow
     context.user_data.clear()
     await update.message.reply_text(ASK_TITLE)
     return TITLE
