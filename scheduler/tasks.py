@@ -1,14 +1,14 @@
 import logging
 from datetime import datetime
 
-from telegram.ext import Application
+from telegram.ext import ContextTypes
 from db.crud import get_connection, update_task_status
 from config import ADMIN_ID
 
 logger = logging.getLogger(__name__)
 
 
-async def check_overdue(app: Application):
+async def check_overdue(context: ContextTypes.DEFAULT_TYPE):
     conn = get_connection()
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
     rows = conn.execute(
@@ -29,7 +29,7 @@ async def check_overdue(app: Application):
         )
 
         try:
-            await app.bot.send_message(
+            await context.bot.send_message(
                 chat_id=ADMIN_ID,
                 text=text,
                 parse_mode="HTML",
@@ -39,7 +39,7 @@ async def check_overdue(app: Application):
 
         if task["assignee"].startswith("@"):
             try:
-                await app.bot.send_message(
+                await context.bot.send_message(
                     chat_id=task["assignee"],
                     text=text,
                     parse_mode="HTML",

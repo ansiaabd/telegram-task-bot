@@ -1,7 +1,3 @@
-import asyncio
-import signal
-
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from telegram.ext import Application
 
 from config import BOT_TOKEN
@@ -10,9 +6,9 @@ from bot.handlers import get_handlers
 from scheduler.tasks import check_overdue
 
 
-async def main():
+def main():
     if not BOT_TOKEN:
-        raise ValueError("BOT_TOKEN not set. Export it or set in .env")
+        raise ValueError("BOT_TOKEN not set")
 
     init_db()
 
@@ -21,30 +17,11 @@ async def main():
     for handler in get_handlers():
         app.add_handler(handler)
 
-    scheduler = AsyncIOScheduler()
-    scheduler.add_job(
-        check_overdue,
-        trigger="interval",
-        minutes=1,
-        args=[app],
-        id="check_overdue",
-        replace_existing=True,
-    )
+    app.job_queue.run_repeating(check_overdue, interval=60, first=10)
 
-    async with app:
-        scheduler.start()
-        print("🤖 Bot started. Press Ctrl+C to stop.")
-        await app.start()
-        await app.updater.start_polling(allowed_updates=["message", "callback_query"])
-        try:
-            await asyncio.Event().wait()
-        except (KeyboardInterrupt, asyncio.CancelledError):
-            pass
-        finally:
-            scheduler.shutdown(wait=False)
-            await app.updater.stop()
-            await app.stop()
+    print("🤖 Bot started. Press Ctrl+C to stop.", flush=True)
+    app.run_polling(allowed_updates=["message", "callback_query"])
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
