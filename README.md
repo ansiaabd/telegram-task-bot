@@ -25,7 +25,7 @@ Telegram-бот для управления задачами с автомати
 
 ## Стек
 
-- **Python 3.11** + `python-telegram-bot`
+- **Python 3.9+** + `python-telegram-bot`
 - **SQLite** (встроенная БД, не требует сервера)
 - **APScheduler** (проверка дедлайнов)
 - **Google Calendar API** / `pywin32` (для Outlook)
@@ -61,7 +61,7 @@ Telegram-бот для управления задачами с автомати
 
 2. Создать виртуальное окружение:
    ```bash
-   python3.11 -m venv venv
+   python3 -m venv venv
    source venv/bin/activate
    ```
 
