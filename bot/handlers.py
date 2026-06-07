@@ -3,8 +3,9 @@ from telegram import Update
 from telegram.ext import CommandHandler, CallbackQueryHandler, ContextTypes
 
 from db.crud import add_task, list_tasks, get_task, update_task_status, delete_task, list_overdue
-from bot.messages import HELP_TEXT, TASK_ADDED, TASK_DONE, TASK_NOT_FOUND, TASK_DELETED, NO_TASKS, INVALID_FORMAT, INVALID_ID, NO_OVERDUE
+from bot.messages import HELP_TEXT, TASK_ADDED, TASK_DONE, TASK_NOT_FOUND, TASK_DELETED, NO_TASKS, INVALID_FORMAT, INVALID_ID, NO_OVERDUE, INVALID_DATE
 from bot.keyboards import task_actions_keyboard
+from utils.date_parser import parse_deadline, format_datetime_ru
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -25,14 +26,18 @@ async def add_task_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(INVALID_FORMAT)
         return
 
-    title, deadline, assignee = parts[0], parts[1], parts[2]
+    title, deadline_raw, assignee = parts[0], parts[1], parts[2]
     description = parts[3] if len(parts) > 3 else ""
 
+    deadline = parse_deadline(deadline_raw)
+    if not deadline:
+        await update.message.reply_text(INVALID_DATE)
+        return
+
     task_id = add_task(title, assignee, deadline, description)
-    task = get_task(task_id)
 
     await update.message.reply_text(
-        TASK_ADDED.format(id=task_id, title=title, deadline=deadline, assignee=assignee),
+        TASK_ADDED.format(id=task_id, title=title, deadline=format_datetime_ru(deadline), assignee=assignee),
         reply_markup=task_actions_keyboard(task_id),
     )
 
