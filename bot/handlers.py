@@ -12,7 +12,7 @@ from telegram.ext import (
 from db.crud import (
     add_task, list_tasks, get_task, update_task_status, delete_task,
     list_overdue, list_pending_approval, register_user, get_user_by_username,
-    get_user, list_users, delete_user,
+    get_user, get_user_role, set_user_role, list_users, delete_user,
 )
 from bot.messages import (
     HELP_TEXT, TASK_ADDED, TASK_DONE, TASK_NOT_FOUND, TASK_DELETED,
@@ -21,11 +21,22 @@ from bot.messages import (
     CANCELLED, SKIPPED_DESC, REGISTERED,
     DONE_REQUESTED, DONE_APPROVED, DONE_REJECTED, DONE_SENT_TO_ADMIN,
     NO_PENDING, NO_USERS, USER_REMOVED, USER_REMOVE_DENIED, USER_NOT_FOUND, ADMIN_ONLY,
+    USER_PROMOTED, USER_DEMOTED, USER_ALREADY_ADMIN, MODERATOR_ONLY,
     NEW_TASK_NOTIFICATION, DONE_WHICH_TASK, DONE_NO_ACTIVE,
 )
 from bot.keyboards import task_actions_keyboard, approval_keyboard
 from utils.date_parser import parse_deadline, format_datetime_ru
 from config import ADMIN_ID
+
+
+def _get_role(user_id: int) -> str:
+    if user_id == ADMIN_ID:
+        return "admin"
+    return get_user_role(user_id)
+
+
+def _can_approve(user_id: int, task: dict) -> bool:
+    return user_id == ADMIN_ID or task.get("created_by") == user_id
 
 
 async def notify_assignee(context: ContextTypes.DEFAULT_TYPE, task_id: int, title: str, deadline: str, assignee: str, assignee_id: int):
@@ -36,6 +47,7 @@ async def notify_assignee(context: ContextTypes.DEFAULT_TYPE, task_id: int, titl
         await context.bot.send_message(chat_id=assignee_id, text=text, parse_mode="HTML")
     except Exception:
         pass
+
 
 TITLE, DESCRIPTION, DEADLINE, ASSIGNEE = range(4)
 
@@ -50,8 +62,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     else:
         register_user(user.id, user.username or "", user.full_name or user.first_name)
+        role = get_user_role(user.id)
+        greet = "👋 Привет! Ты зарегистрирован в системе задач.\n"
+        if role == "moderator":
+            greet = "👋 Привет, модератор!\n"
         await update.message.reply_text(
-            REGISTERED.format(name=user.full_name or user.first_name)
+            greet + REGISTERED.format(name=user.full_name or user.first_name)
         )
 
 
@@ -66,6 +82,8 @@ async def add_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     parts = [p.strip() for p in re.split(r"\s*/\s*", text)]
     if parts[0].lower().lstrip("/") in ("задача", "add"):
         parts = parts[1:]
+
+    creator_id = update.effective_user.id
 
     if len(parts) >= 3:
         title = parts[0]
@@ -87,7 +105,7 @@ async def add_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if user_data:
             assignee_id = user_data["user_id"]
 
-        task_id = add_task(title, assignee_raw, deadline, description, assignee_id)
+        task_id = add_task(title, assignee_raw, deadline, description, assignee_id, creator_id)
         desc_text = f"📋 {description}" if description else ""
         await update.message.reply_text(
             TASK_ADDED.format(id=task_id, title=title, deadline=format_datetime_ru(deadline), assignee=assignee_raw, description=desc_text),
@@ -136,13 +154,14 @@ async def add_assignee(update: Update, context: ContextTypes.DEFAULT_TYPE):
     title = context.user_data["title"]
     deadline = context.user_data["deadline"]
     description = context.user_data.get("description", "")
+    creator_id = update.effective_user.id
 
     assignee_id = None
     user_data = get_user_by_username(assignee_raw)
     if user_data:
         assignee_id = user_data["user_id"]
 
-    task_id = add_task(title, assignee_raw, deadline, description, assignee_id)
+    task_id = add_task(title, assignee_raw, deadline, description, assignee_id, creator_id)
     desc_text = f"📋 {description}" if description else ""
     await update.message.reply_text(
         TASK_ADDED.format(id=task_id, title=title, deadline=format_datetime_ru(deadline), assignee=assignee_raw, description=desc_text),
@@ -163,13 +182,15 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def list_tasks_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    is_admin = user_id == ADMIN_ID
-    show_all = is_admin and context.args and context.args[0] == "all"
+    role = _get_role(user_id)
+    show_all = role == "admin" and context.args and context.args[0] == "all"
 
     if show_all:
         tasks = list_tasks(include_done=False)
+    elif role == "admin":
+        tasks = list_tasks(include_done=False)
     else:
-        tasks = list_tasks(include_done=False, user_id=user_id)
+        tasks = list_tasks(include_done=False, user_id=user_id, role=role)
 
     if not tasks:
         await update.message.reply_text(NO_TASKS)
@@ -204,16 +225,34 @@ async def done_task_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     user_id = update.effective_user.id
-    is_admin = user_id == ADMIN_ID
+    role = _get_role(user_id)
 
-    if is_admin:
+    if role == "admin" or _can_approve(user_id, task):
         update_task_status(task_id, "done")
         await update.message.reply_text(TASK_DONE.format(id=task_id))
     else:
         update_task_status(task_id, "pending_approval")
         await update.message.reply_text(DONE_SENT_TO_ADMIN)
+        await _notify_approvers(context, task)
 
-        text = DONE_REQUESTED.format(id=task_id, title=task["title"])
+
+async def _notify_approvers(context: ContextTypes.DEFAULT_TYPE, task: dict):
+    task_id = task["id"]
+    text = DONE_REQUESTED.format(id=task_id, title=task["title"])
+
+    notified = set()
+    if task.get("created_by"):
+        try:
+            await context.bot.send_message(
+                chat_id=task["created_by"],
+                text=text,
+                reply_markup=approval_keyboard(task_id),
+            )
+            notified.add(task["created_by"])
+        except Exception:
+            pass
+
+    if ADMIN_ID not in notified:
         try:
             await context.bot.send_message(
                 chat_id=ADMIN_ID,
@@ -253,7 +292,8 @@ async def users_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for u in users:
         name = u["full_name"] or u["username"] or f"ID {u['user_id']}"
         created = u["created_at"][:10]
-        lines.append(f"🆔 <code>{u['user_id']}</code> — {name} (@{u['username']}) — с {created}")
+        role_badge = "⭐ " if u["role"] == "admin" else "🛡 " if u["role"] == "moderator" else ""
+        lines.append(f"{role_badge}🆔 <code>{u['user_id']}</code> — {name} (@{u['username']}) — {u['role']} — с {created}")
     await update.message.reply_text(
         "📋 <b>Зарегистрированные пользователи:</b>\n\n" + "\n".join(lines),
         parse_mode="HTML",
@@ -279,11 +319,66 @@ async def removeuser_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
     await update.message.reply_text(USER_REMOVED.format(user_id=target_id))
 
 
+# ── Promote / Demote (admin) ─────────────────────────────
+
+async def promote_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        await update.message.reply_text(ADMIN_ONLY)
+        return
+    try:
+        target_id = int(context.args[0])
+    except (IndexError, ValueError):
+        await update.message.reply_text("❌ Укажите ID пользователя: /promote <id>")
+        return
+    if target_id == ADMIN_ID:
+        await update.message.reply_text(USER_ALREADY_ADMIN)
+        return
+    if not get_user(target_id):
+        await update.message.reply_text(USER_NOT_FOUND.format(user_id=target_id))
+        return
+    set_user_role(target_id, "moderator")
+    await update.message.reply_text(USER_PROMOTED.format(user_id=target_id))
+    try:
+        await context.bot.send_message(
+            chat_id=target_id,
+            text="🛡 Вам назначена роль модератора! Теперь вы можете создавать задачи и подтверждать выполнение.",
+        )
+    except Exception:
+        pass
+
+
+async def demote_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        await update.message.reply_text(ADMIN_ONLY)
+        return
+    try:
+        target_id = int(context.args[0])
+    except (IndexError, ValueError):
+        await update.message.reply_text("❌ Укажите ID пользователя: /demote <id>")
+        return
+    if target_id == ADMIN_ID:
+        await update.message.reply_text(USER_ALREADY_ADMIN)
+        return
+    if not get_user(target_id):
+        await update.message.reply_text(USER_NOT_FOUND.format(user_id=target_id))
+        return
+    set_user_role(target_id, "user")
+    await update.message.reply_text(USER_DEMOTED.format(user_id=target_id))
+    try:
+        await context.bot.send_message(
+            chat_id=target_id,
+            text="🔄 Ваша роль модератора отозвана.",
+        )
+    except Exception:
+        pass
+
+
 # ── Overdue / Pending ────────────────────────────────────
 
 async def overdue_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    tasks = list_overdue(user_id=user_id if user_id != ADMIN_ID else None)
+    role = _get_role(user_id)
+    tasks = list_overdue(user_id=None if role == "admin" else user_id, role=role)
     if not tasks:
         await update.message.reply_text(NO_OVERDUE)
         return
@@ -299,7 +394,12 @@ async def overdue_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def pending_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    tasks = list_pending_approval()
+    user_id = update.effective_user.id
+    role = _get_role(user_id)
+    if role not in ("admin", "moderator"):
+        await update.message.reply_text(MODERATOR_ONLY)
+        return
+    tasks = list_pending_approval(user_id=user_id, role=role)
     if not tasks:
         await update.message.reply_text(NO_PENDING)
         return
@@ -318,7 +418,8 @@ async def pending_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def done_natural(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    tasks = list_tasks(include_done=False, user_id=user_id)
+    role = _get_role(user_id)
+    tasks = list_tasks(include_done=False, user_id=user_id, role=role)
 
     if not tasks:
         await update.message.reply_text(DONE_NO_ACTIVE)
@@ -355,23 +456,15 @@ async def done_natural_number(update: Update, context: ContextTypes.DEFAULT_TYPE
 async def _request_done_approval(update: Update, context: ContextTypes.DEFAULT_TYPE, task: dict):
     task_id = task["id"]
     user_id = update.effective_user.id
+    role = _get_role(user_id)
 
-    if user_id == ADMIN_ID:
+    if role == "admin" or _can_approve(user_id, task):
         update_task_status(task_id, "done")
         await update.message.reply_text(TASK_DONE.format(id=task_id))
     else:
         update_task_status(task_id, "pending_approval")
         await update.message.reply_text(DONE_SENT_TO_ADMIN)
-
-        text = DONE_REQUESTED.format(id=task_id, title=task["title"])
-        try:
-            await context.bot.send_message(
-                chat_id=ADMIN_ID,
-                text=text,
-                reply_markup=approval_keyboard(task_id),
-            )
-        except Exception:
-            pass
+        await _notify_approvers(context, task)
 
 
 # ── Callback (buttons) ───────────────────────────────────
@@ -383,7 +476,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = query.data
     user_id = update.effective_user.id
 
-    # User marks as done
     if data.startswith("done_"):
         task_id = int(data.split("_")[1])
         task = get_task(task_id)
@@ -391,32 +483,22 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text(TASK_NOT_FOUND.format(id=task_id))
             return
 
-        if user_id == ADMIN_ID:
+        if _can_approve(user_id, task):
             update_task_status(task_id, "done")
             await query.edit_message_text(TASK_DONE.format(id=task_id))
         else:
             update_task_status(task_id, "pending_approval")
             await query.edit_message_text(DONE_SENT_TO_ADMIN)
+            await _notify_approvers(context, task)
 
-            text = DONE_REQUESTED.format(id=task_id, title=task["title"])
-            try:
-                await context.bot.send_message(
-                    chat_id=ADMIN_ID,
-                    text=text,
-                    reply_markup=approval_keyboard(task_id),
-                )
-            except Exception:
-                pass
-
-    # Admin approves
     elif data.startswith("approve_"):
-        if user_id != ADMIN_ID:
-            await query.edit_message_text("❌ Только администратор может подтверждать.")
-            return
         task_id = int(data.split("_")[1])
         task = get_task(task_id)
         if not task:
             await query.edit_message_text(TASK_NOT_FOUND.format(id=task_id))
+            return
+        if not _can_approve(user_id, task):
+            await query.edit_message_text("❌ Только создатель задачи или администратор может подтверждать.")
             return
         update_task_status(task_id, "done")
         await query.edit_message_text(DONE_APPROVED.format(id=task_id))
@@ -429,15 +511,14 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except Exception:
                 pass
 
-    # Admin rejects
     elif data.startswith("reject_"):
-        if user_id != ADMIN_ID:
-            await query.edit_message_text("❌ Только администратор может отклонять.")
-            return
         task_id = int(data.split("_")[1])
         task = get_task(task_id)
         if not task:
             await query.edit_message_text(TASK_NOT_FOUND.format(id=task_id))
+            return
+        if not _can_approve(user_id, task):
+            await query.edit_message_text("❌ Только создатель задачи или администратор может отклонять.")
             return
         update_task_status(task_id, "active")
         await query.edit_message_text(DONE_REJECTED.format(id=task_id))
@@ -450,7 +531,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except Exception:
                 pass
 
-    # Delete
     elif data.startswith("delete_"):
         task_id = int(data.split("_")[1])
         if delete_task(task_id):
@@ -490,6 +570,8 @@ def get_handlers():
         CommandHandler("pending", pending_handler),
         CommandHandler("users", users_handler),
         CommandHandler("removeuser", removeuser_handler),
+        CommandHandler("promote", promote_handler),
+        CommandHandler("demote", demote_handler),
         MessageHandler(filters.Regex(r"(?i)^(выполнено|сделано|готово)$") & ~filters.COMMAND, done_natural),
         MessageHandler(filters.Regex(r"^\d+$") & ~filters.COMMAND, done_natural_number),
         CallbackQueryHandler(button_callback),

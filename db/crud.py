@@ -10,8 +10,25 @@ def init_db():
         schema = f.read()
     conn = get_connection()
     conn.executescript(schema)
+    _migrate(conn)
     conn.commit()
     conn.close()
+
+
+def _migrate(conn):
+    existing_cols = {
+        r["name"]
+        for r in conn.execute("PRAGMA table_info(users)").fetchall()
+    }
+    if "role" not in existing_cols:
+        conn.execute("ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'user'")
+
+    existing_cols = {
+        r["name"]
+        for r in conn.execute("PRAGMA table_info(tasks)").fetchall()
+    }
+    if "created_by" not in existing_cols:
+        conn.execute("ALTER TABLE tasks ADD COLUMN created_by INTEGER DEFAULT NULL")
 
 
 # ── Users ────────────────────────────────────────────────
@@ -42,9 +59,34 @@ def get_user(user_id: int) -> Optional[dict]:
     return dict(row) if row else None
 
 
+def get_user_role(user_id: int) -> str:
+    conn = get_connection()
+    row = conn.execute(
+        "SELECT role FROM users WHERE user_id = ?", (user_id,)
+    ).fetchone()
+    conn.close()
+    return row["role"] if row else "user"
+
+
+def set_user_role(user_id: int, role: str):
+    conn = get_connection()
+    conn.execute("UPDATE users SET role = ? WHERE user_id = ?", (role, user_id))
+    conn.commit()
+    conn.close()
+
+
 def list_users() -> list[dict]:
     conn = get_connection()
     rows = conn.execute("SELECT * FROM users ORDER BY created_at").fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def list_moderators() -> list[dict]:
+    conn = get_connection()
+    rows = conn.execute(
+        "SELECT * FROM users WHERE role IN ('admin', 'moderator') ORDER BY created_at"
+    ).fetchall()
     conn.close()
     return [dict(r) for r in rows]
 
@@ -66,11 +108,12 @@ def add_task(
     deadline: str,
     description: str = "",
     assignee_id: Optional[int] = None,
+    created_by: Optional[int] = None,
 ) -> int:
     conn = get_connection()
     cur = conn.execute(
-        "INSERT INTO tasks (title, description, assignee, assignee_id, deadline) VALUES (?, ?, ?, ?, ?)",
-        (title, description, assignee, assignee_id, deadline),
+        "INSERT INTO tasks (title, description, assignee, assignee_id, deadline, created_by) VALUES (?, ?, ?, ?, ?, ?)",
+        (title, description, assignee, assignee_id, deadline, created_by),
     )
     conn.commit()
     task_id = cur.lastrowid
@@ -85,9 +128,27 @@ def get_task(task_id: int) -> Optional[dict]:
     return dict(row) if row else None
 
 
-def list_tasks(include_done: bool = False, user_id: Optional[int] = None) -> list[dict]:
+def list_tasks(include_done: bool = False, user_id: Optional[int] = None, role: str = "user") -> list[dict]:
     conn = get_connection()
-    if user_id:
+    if user_id is None or role == "admin":
+        if include_done:
+            rows = conn.execute("SELECT * FROM tasks ORDER BY deadline").fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM tasks WHERE status != 'done' ORDER BY deadline"
+            ).fetchall()
+    elif role == "moderator":
+        if include_done:
+            rows = conn.execute(
+                "SELECT * FROM tasks WHERE assignee_id = ? OR created_by = ? ORDER BY deadline",
+                (user_id, user_id),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM tasks WHERE status != 'done' AND (assignee_id = ? OR created_by = ?) ORDER BY deadline",
+                (user_id, user_id),
+            ).fetchall()
+    else:
         if include_done:
             rows = conn.execute(
                 "SELECT * FROM tasks WHERE assignee_id = ? ORDER BY deadline",
@@ -97,13 +158,6 @@ def list_tasks(include_done: bool = False, user_id: Optional[int] = None) -> lis
             rows = conn.execute(
                 "SELECT * FROM tasks WHERE assignee_id = ? AND status != 'done' ORDER BY deadline",
                 (user_id,),
-            ).fetchall()
-    else:
-        if include_done:
-            rows = conn.execute("SELECT * FROM tasks ORDER BY deadline").fetchall()
-        else:
-            rows = conn.execute(
-                "SELECT * FROM tasks WHERE status != 'done' ORDER BY deadline"
             ).fetchall()
     conn.close()
     return [dict(r) for r in rows]
@@ -143,25 +197,38 @@ def delete_task(task_id: int) -> bool:
     return deleted
 
 
-def list_overdue(user_id: Optional[int] = None) -> list[dict]:
+def list_overdue(user_id: Optional[int] = None, role: str = "user") -> list[dict]:
     conn = get_connection()
-    if user_id:
+    if user_id is None or role == "admin":
         rows = conn.execute(
-            "SELECT * FROM tasks WHERE status = 'overdue' AND assignee_id = ? ORDER BY deadline",
-            (user_id,),
+            "SELECT * FROM tasks WHERE status = 'overdue' ORDER BY deadline"
+        ).fetchall()
+    elif role == "moderator":
+        rows = conn.execute(
+            "SELECT * FROM tasks WHERE status = 'overdue' AND (assignee_id = ? OR created_by = ?) ORDER BY deadline",
+            (user_id, user_id),
         ).fetchall()
     else:
         rows = conn.execute(
-            "SELECT * FROM tasks WHERE status = 'overdue' ORDER BY deadline"
+            "SELECT * FROM tasks WHERE status = 'overdue' AND assignee_id = ? ORDER BY deadline",
+            (user_id,),
         ).fetchall()
     conn.close()
     return [dict(r) for r in rows]
 
 
-def list_pending_approval() -> list[dict]:
+def list_pending_approval(user_id: Optional[int] = None, role: str = "admin") -> list[dict]:
     conn = get_connection()
-    rows = conn.execute(
-        "SELECT * FROM tasks WHERE status = 'pending_approval' ORDER BY deadline"
-    ).fetchall()
+    if role == "admin" or user_id is None:
+        rows = conn.execute(
+            "SELECT * FROM tasks WHERE status = 'pending_approval' ORDER BY deadline"
+        ).fetchall()
+    elif role == "moderator":
+        rows = conn.execute(
+            "SELECT * FROM tasks WHERE status = 'pending_approval' AND created_by = ? ORDER BY deadline",
+            (user_id,),
+        ).fetchall()
+    else:
+        rows = conn.execute("SELECT * FROM tasks WHERE 0").fetchall()
     conn.close()
     return [dict(r) for r in rows]
