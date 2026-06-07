@@ -20,14 +20,16 @@ from bot.messages import (
     NO_OVERDUE,
     INVALID_DATE,
     ASK_TITLE,
+    ASK_DESCRIPTION,
     ASK_DEADLINE,
     ASK_ASSIGNEE,
     CANCELLED,
+    SKIPPED_DESC,
 )
 from bot.keyboards import task_actions_keyboard
 from utils.date_parser import parse_deadline, format_datetime_ru
 
-TITLE, DEADLINE, ASSIGNEE = range(3)
+TITLE, DESCRIPTION, DEADLINE, ASSIGNEE = range(4)
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -48,6 +50,19 @@ async def add_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def add_title(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["title"] = update.message.text.strip()
+    await update.message.reply_text(ASK_DESCRIPTION)
+    return DESCRIPTION
+
+
+async def skip_description(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["description"] = ""
+    await update.message.reply_text(SKIPPED_DESC)
+    await update.message.reply_text(ASK_DEADLINE)
+    return DEADLINE
+
+
+async def add_description(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["description"] = update.message.text.strip()
     await update.message.reply_text(ASK_DEADLINE)
     return DEADLINE
 
@@ -67,11 +82,13 @@ async def add_assignee(update: Update, context: ContextTypes.DEFAULT_TYPE):
     assignee = update.message.text.strip()
     title = context.user_data["title"]
     deadline = context.user_data["deadline"]
+    description = context.user_data.get("description", "")
 
-    task_id = add_task(title, assignee, deadline)
+    task_id = add_task(title, assignee, deadline, description)
 
+    desc_text = f"📋 {description}" if description else ""
     await update.message.reply_text(
-        TASK_ADDED.format(id=task_id, title=title, deadline=format_datetime_ru(deadline), assignee=assignee),
+        TASK_ADDED.format(id=task_id, title=title, deadline=format_datetime_ru(deadline), assignee=assignee, description=desc_text),
         reply_markup=task_actions_keyboard(task_id),
     )
     context.user_data.clear()
@@ -177,6 +194,10 @@ def get_handlers():
         ],
         states={
             TITLE: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_title)],
+            DESCRIPTION: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, add_description),
+                CommandHandler("skip", skip_description),
+            ],
             DEADLINE: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_deadline)],
             ASSIGNEE: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_assignee)],
         },
