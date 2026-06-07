@@ -11,7 +11,8 @@ from telegram.ext import (
 
 from db.crud import (
     add_task, list_tasks, get_task, update_task_status, delete_task,
-    list_overdue, list_pending_approval, register_user, get_user_by_username, get_user,
+    list_overdue, list_pending_approval, register_user, get_user_by_username,
+    get_user, list_users, delete_user,
 )
 from bot.messages import (
     HELP_TEXT, TASK_ADDED, TASK_DONE, TASK_NOT_FOUND, TASK_DELETED,
@@ -19,7 +20,7 @@ from bot.messages import (
     ASK_TITLE, ASK_DESCRIPTION, ASK_DEADLINE, ASK_ASSIGNEE,
     CANCELLED, SKIPPED_DESC, REGISTERED,
     DONE_REQUESTED, DONE_APPROVED, DONE_REJECTED, DONE_SENT_TO_ADMIN,
-    NO_PENDING,
+    NO_PENDING, NO_USERS, USER_REMOVED, USER_REMOVE_DENIED, USER_NOT_FOUND, ADMIN_ONLY,
 )
 from bot.keyboards import task_actions_keyboard, approval_keyboard
 from utils.date_parser import parse_deadline, format_datetime_ru
@@ -220,6 +221,46 @@ async def delete_task_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
         await update.message.reply_text(TASK_NOT_FOUND.format(id=task_id))
 
 
+# ── Users management (admin) ─────────────────────────────
+
+async def users_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        await update.message.reply_text(ADMIN_ONLY)
+        return
+    users = list_users()
+    if not users:
+        await update.message.reply_text(NO_USERS)
+        return
+    lines = []
+    for u in users:
+        name = u["full_name"] or u["username"] or f"ID {u['user_id']}"
+        created = u["created_at"][:10]
+        lines.append(f"🆔 <code>{u['user_id']}</code> — {name} (@{u['username']}) — с {created}")
+    await update.message.reply_text(
+        "📋 <b>Зарегистрированные пользователи:</b>\n\n" + "\n".join(lines),
+        parse_mode="HTML",
+    )
+
+
+async def removeuser_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        await update.message.reply_text(ADMIN_ONLY)
+        return
+    try:
+        target_id = int(context.args[0])
+    except (IndexError, ValueError):
+        await update.message.reply_text("❌ Укажите ID пользователя: /removeuser <id>")
+        return
+    if target_id == ADMIN_ID:
+        await update.message.reply_text(USER_REMOVE_DENIED)
+        return
+    if not get_user(target_id):
+        await update.message.reply_text(USER_NOT_FOUND.format(user_id=target_id))
+        return
+    delete_user(target_id)
+    await update.message.reply_text(USER_REMOVED.format(user_id=target_id))
+
+
 # ── Overdue / Pending ────────────────────────────────────
 
 async def overdue_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -369,5 +410,7 @@ def get_handlers():
         CommandHandler("delete", delete_task_handler),
         CommandHandler("overdue", overdue_handler),
         CommandHandler("pending", pending_handler),
+        CommandHandler("users", users_handler),
+        CommandHandler("removeuser", removeuser_handler),
         CallbackQueryHandler(button_callback),
     ]

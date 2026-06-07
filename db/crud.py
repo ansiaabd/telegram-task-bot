@@ -42,6 +42,22 @@ def get_user(user_id: int) -> Optional[dict]:
     return dict(row) if row else None
 
 
+def list_users() -> list[dict]:
+    conn = get_connection()
+    rows = conn.execute("SELECT * FROM users ORDER BY created_at").fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def delete_user(user_id: int) -> bool:
+    conn = get_connection()
+    cur = conn.execute("DELETE FROM users WHERE user_id = ?", (user_id,))
+    conn.commit()
+    deleted = cur.rowcount > 0
+    conn.close()
+    return deleted
+
+
 # ── Tasks ────────────────────────────────────────────────
 
 def add_task(
