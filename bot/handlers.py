@@ -2,8 +2,8 @@ import re
 from telegram import Update
 from telegram.ext import CommandHandler, CallbackQueryHandler, ContextTypes
 
-from db.crud import add_task, list_tasks, get_task, update_task_status, delete_task
-from bot.messages import HELP_TEXT, TASK_ADDED, TASK_DONE, TASK_NOT_FOUND, TASK_DELETED, NO_TASKS, INVALID_FORMAT, INVALID_ID
+from db.crud import add_task, list_tasks, get_task, update_task_status, delete_task, list_overdue
+from bot.messages import HELP_TEXT, TASK_ADDED, TASK_DONE, TASK_NOT_FOUND, TASK_DELETED, NO_TASKS, INVALID_FORMAT, INVALID_ID, NO_OVERDUE
 from bot.keyboards import task_actions_keyboard
 
 
@@ -84,6 +84,25 @@ async def delete_task_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
         await update.message.reply_text(TASK_NOT_FOUND.format(id=task_id))
 
 
+async def overdue_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    tasks = list_overdue()
+    if not tasks:
+        await update.message.reply_text(NO_OVERDUE)
+        return
+
+    lines = []
+    for t in tasks:
+        lines.append(
+            f"🔴 #{t['id']} <b>{t['title']}</b>\n"
+            f"   ⏰ {t['deadline']} | 👤 {t['assignee']}"
+        )
+
+    await update.message.reply_text(
+        "⚠️ <b>Просроченные задачи:</b>\n\n" + "\n\n".join(lines),
+        parse_mode="HTML",
+    )
+
+
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -111,5 +130,6 @@ def get_handlers():
         CommandHandler("list", list_tasks_handler),
         CommandHandler("done", done_task_handler),
         CommandHandler("delete", delete_task_handler),
+        CommandHandler("overdue", overdue_handler),
         CallbackQueryHandler(button_callback),
     ]

@@ -70,6 +70,15 @@ def update_task_field(task_id: int, field: str, value: str) -> bool:
     return updated
 
 
+def list_overdue() -> list[dict]:
+    conn = get_connection()
+    rows = conn.execute(
+        "SELECT * FROM tasks WHERE status = 'overdue' ORDER BY deadline"
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
 def delete_task(task_id: int) -> bool:
     conn = get_connection()
     cur = conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
