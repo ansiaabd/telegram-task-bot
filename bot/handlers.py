@@ -33,10 +33,15 @@ TITLE, DESCRIPTION, DEADLINE, ASSIGNEE = range(4)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
-    register_user(user.id, user.username or "", user.full_name or user.first_name)
-    await update.message.reply_text(
-        REGISTERED.format(name=user.full_name or user.first_name)
-    )
+    if user.id == ADMIN_ID:
+        await update.message.reply_text(
+            "👋 Привет, администратор!\n" + HELP_TEXT
+        )
+    else:
+        register_user(user.id, user.username or "", user.full_name or user.first_name)
+        await update.message.reply_text(
+            REGISTERED.format(name=user.full_name or user.first_name)
+        )
 
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
