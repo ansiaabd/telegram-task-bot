@@ -24,7 +24,7 @@ from bot.messages import (
     USER_PROMOTED, USER_DEMOTED, USER_ALREADY_ADMIN, MODERATOR_ONLY,
     NEW_TASK_NOTIFICATION, DONE_WHICH_TASK, DONE_NO_ACTIVE,
 )
-from bot.keyboards import task_actions_keyboard, approval_keyboard
+from bot.keyboards import task_actions_keyboard, approval_keyboard, user_picker_keyboard
 from utils.date_parser import parse_deadline, format_datetime_ru
 from config import ADMIN_ID
 
@@ -49,7 +49,7 @@ async def notify_assignee(context: ContextTypes.DEFAULT_TYPE, task_id: int, titl
         pass
 
 
-TITLE, DESCRIPTION, DEADLINE, ASSIGNEE = range(4)
+ASSIGNEE, TITLE, DESCRIPTION, DEADLINE = range(4)
 
 
 # ── Start / Registration ─────────────────────────────────
@@ -63,11 +63,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         register_user(user.id, user.username or "", user.full_name or user.first_name)
         role = get_user_role(user.id)
-        greet = "👋 Привет! Ты зарегистрирован в системе задач.\n"
-        if role == "moderator":
-            greet = "👋 Привет, модератор!\n"
+        prefix = "🛡 " if role == "moderator" else ""
         await update.message.reply_text(
-            greet + REGISTERED.format(name=user.full_name or user.first_name)
+            prefix + REGISTERED.format(name=user.full_name or user.first_name)
         )
 
 
@@ -80,25 +78,38 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def add_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
     parts = [p.strip() for p in re.split(r"\s*/\s*", text)]
-    if parts[0].lower().lstrip("/") in ("задача", "add"):
+
+    first = parts[0].lower().lstrip("/")
+    if first in ("задача", "add"):
         parts = parts[1:]
+    elif first.startswith("задача ") or first.startswith("add "):
+        trigger = "задача" if first.startswith("задача") else "add"
+        rest = parts[0][len(trigger):].strip()
+        parts = [rest] + parts[1:]
 
     creator_id = update.effective_user.id
 
     if len(parts) >= 3:
         title = parts[0]
-        candidate_deadline = parse_deadline(parts[1])
-        if candidate_deadline:
-            deadline = candidate_deadline
-            assignee_raw = parts[2]
-            description = " / ".join(parts[3:]) if len(parts) > 3 else ""
-        else:
-            description = parts[1]
-            deadline = parse_deadline(parts[2])
-            if not deadline:
-                await update.message.reply_text(INVALID_DATE)
-                return ConversationHandler.END
-            assignee_raw = " / ".join(parts[3:]) if len(parts) > 3 else ""
+        deadline = None
+        desc_parts = []
+        assignee_parts = []
+        found_deadline = False
+        for p in parts[1:]:
+            if not found_deadline:
+                d = parse_deadline(p)
+                if d:
+                    deadline = d
+                    found_deadline = True
+                else:
+                    desc_parts.append(p)
+            else:
+                assignee_parts.append(p)
+        if not deadline:
+            await update.message.reply_text(INVALID_DATE)
+            return ConversationHandler.END
+        description = " / ".join(desc_parts)
+        assignee_raw = " / ".join(assignee_parts)
 
         assignee_id = None
         user_data = get_user_by_username(assignee_raw)
@@ -115,12 +126,72 @@ async def add_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ConversationHandler.END
 
     context.user_data.clear()
+    return await _ask_assignee(update, context)
+
+
+async def _ask_assignee(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    users = list_users()
+    if users:
+        await update.message.reply_text(
+            "👤 Выберите исполнителя:",
+            reply_markup=user_picker_keyboard(users, update.effective_user.id),
+        )
+    else:
+        await update.message.reply_text(ASK_ASSIGNEE)
+    return ASSIGNEE
+
+
+async def assignee_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    assignee_raw = update.message.text.strip()
+    user_data = get_user_by_username(assignee_raw)
+    context.user_data["assignee_id"] = user_data["user_id"] if user_data else None
+    context.user_data["assignee_raw"] = assignee_raw
     await update.message.reply_text(ASK_TITLE)
     return TITLE
 
 
+async def assignee_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    data = query.data
+    if data == "assignee_self":
+        user = update.effective_user
+        context.user_data["assignee_id"] = user.id
+        context.user_data["assignee_raw"] = user.full_name or user.first_name or f"ID {user.id}"
+    elif data.startswith("assignee_"):
+        uid = int(data.split("_")[1])
+        u = get_user(uid)
+        if u:
+            context.user_data["assignee_id"] = uid
+            context.user_data["assignee_raw"] = u.get("full_name") or u.get("username") or f"ID {uid}"
+
+    await query.edit_message_text(f"✅ Исполнитель: {context.user_data['assignee_raw']}")
+    await query.message.reply_text(ASK_TITLE)
+    return TITLE
+
+
 async def add_title(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["title"] = update.message.text.strip()
+    text = update.message.text.strip()
+    parts = [p.strip() for p in re.split(r"\s*/\s*", text)]
+
+    if len(parts) >= 2:
+        title = parts[0]
+        deadline = None
+        desc_parts = []
+        for p in parts[1:]:
+            d = parse_deadline(p)
+            if d and not deadline:
+                deadline = d
+            elif not deadline:
+                desc_parts.append(p)
+        if deadline:
+            context.user_data["title"] = title
+            context.user_data["description"] = " / ".join(desc_parts)
+            context.user_data["deadline"] = deadline
+            return await _finish_task(update, context)
+
+    context.user_data["title"] = text
     await update.message.reply_text(ASK_DESCRIPTION)
     return DESCRIPTION
 
@@ -133,33 +204,29 @@ async def skip_description(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def add_description(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["description"] = update.message.text.strip()
+    text = update.message.text.strip()
+    parts = [p.strip() for p in re.split(r"\s*/\s*", text)]
+
+    if len(parts) >= 2:
+        desc_text = parts[0]
+        deadline = parse_deadline(parts[1])
+        if deadline:
+            context.user_data["description"] = desc_text
+            context.user_data["deadline"] = deadline
+            return await _finish_task(update, context)
+
+    context.user_data["description"] = text
     await update.message.reply_text(ASK_DEADLINE)
     return DEADLINE
 
 
-async def add_deadline(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    deadline_raw = update.message.text.strip()
-    deadline = parse_deadline(deadline_raw)
-    if not deadline:
-        await update.message.reply_text(INVALID_DATE)
-        return DEADLINE
-    context.user_data["deadline"] = deadline
-    await update.message.reply_text(ASK_ASSIGNEE)
-    return ASSIGNEE
-
-
-async def add_assignee(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    assignee_raw = update.message.text.strip()
+async def _finish_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
     title = context.user_data["title"]
     deadline = context.user_data["deadline"]
     description = context.user_data.get("description", "")
+    assignee_raw = context.user_data["assignee_raw"]
+    assignee_id = context.user_data.get("assignee_id")
     creator_id = update.effective_user.id
-
-    assignee_id = None
-    user_data = get_user_by_username(assignee_raw)
-    if user_data:
-        assignee_id = user_data["user_id"]
 
     task_id = add_task(title, assignee_raw, deadline, description, assignee_id, creator_id)
     desc_text = f"📋 {description}" if description else ""
@@ -170,6 +237,16 @@ async def add_assignee(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await notify_assignee(context, task_id, title, format_datetime_ru(deadline), assignee_raw, assignee_id)
     context.user_data.clear()
     return ConversationHandler.END
+
+
+async def add_deadline(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    deadline_raw = update.message.text.strip()
+    deadline = parse_deadline(deadline_raw)
+    if not deadline:
+        await update.message.reply_text(INVALID_DATE)
+        return DEADLINE
+    context.user_data["deadline"] = deadline
+    return await _finish_task(update, context)
 
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -548,13 +625,16 @@ def get_handlers():
             MessageHandler(filters.Regex(r"(?i)\bзадача\b"), add_start),
         ],
         states={
+            ASSIGNEE: [
+                CallbackQueryHandler(assignee_callback, pattern=r"^assignee_"),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, assignee_text),
+            ],
             TITLE: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_title)],
             DESCRIPTION: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, add_description),
                 CommandHandler("skip", skip_description),
             ],
             DEADLINE: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_deadline)],
-            ASSIGNEE: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_assignee)],
         },
         fallbacks=[CommandHandler("cancel", cancel)],
     )
