@@ -21,10 +21,21 @@ from bot.messages import (
     CANCELLED, SKIPPED_DESC, REGISTERED,
     DONE_REQUESTED, DONE_APPROVED, DONE_REJECTED, DONE_SENT_TO_ADMIN,
     NO_PENDING, NO_USERS, USER_REMOVED, USER_REMOVE_DENIED, USER_NOT_FOUND, ADMIN_ONLY,
+    NEW_TASK_NOTIFICATION,
 )
 from bot.keyboards import task_actions_keyboard, approval_keyboard
 from utils.date_parser import parse_deadline, format_datetime_ru
 from config import ADMIN_ID
+
+
+async def notify_assignee(context: ContextTypes.DEFAULT_TYPE, task_id: int, title: str, deadline: str, assignee: str, assignee_id: int):
+    if not assignee_id:
+        return
+    text = NEW_TASK_NOTIFICATION.format(id=task_id, title=title, deadline=deadline, assignee=assignee)
+    try:
+        await context.bot.send_message(chat_id=assignee_id, text=text, parse_mode="HTML")
+    except Exception:
+        pass
 
 TITLE, DESCRIPTION, DEADLINE, ASSIGNEE = range(4)
 
@@ -82,6 +93,7 @@ async def add_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             TASK_ADDED.format(id=task_id, title=title, deadline=format_datetime_ru(deadline), assignee=assignee_raw, description=desc_text),
             reply_markup=task_actions_keyboard(task_id),
         )
+        await notify_assignee(context, task_id, title, format_datetime_ru(deadline), assignee_raw, assignee_id)
         return ConversationHandler.END
 
     context.user_data.clear()
@@ -136,6 +148,7 @@ async def add_assignee(update: Update, context: ContextTypes.DEFAULT_TYPE):
         TASK_ADDED.format(id=task_id, title=title, deadline=format_datetime_ru(deadline), assignee=assignee_raw, description=desc_text),
         reply_markup=task_actions_keyboard(task_id),
     )
+    await notify_assignee(context, task_id, title, format_datetime_ru(deadline), assignee_raw, assignee_id)
     context.user_data.clear()
     return ConversationHandler.END
 
