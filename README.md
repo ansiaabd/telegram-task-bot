@@ -55,7 +55,7 @@ Telegram-бот для управления задачами с автомати
 
 1. Клонировать репозиторий:
    ```bash
-   git clone https://github.com/annaabdu/telegram-task-bot.git
+   git clone https://github.com/ansiaabd/telegram-task-bot.git
    cd telegram-task-bot
    ```
 
