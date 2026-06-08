@@ -24,7 +24,7 @@ from bot.messages import (
     USER_PROMOTED, USER_DEMOTED, USER_ALREADY_ADMIN, MODERATOR_ONLY,
     NEW_TASK_NOTIFICATION, DONE_WHICH_TASK, DONE_NO_ACTIVE,
 )
-from bot.keyboards import task_actions_keyboard, approval_keyboard, user_picker_keyboard
+from bot.keyboards import task_actions_keyboard, approval_keyboard, user_picker_keyboard, menu_keyboard
 from utils.date_parser import parse_deadline, format_datetime_ru
 from config import ADMIN_ID
 
@@ -71,6 +71,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(HELP_TEXT)
+
+
+async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "📌 <b>Быстрое меню</b>",
+        parse_mode="HTML",
+        reply_markup=menu_keyboard(),
+    )
 
 
 # ── Add task (inline + conversation) ─────────────────────
@@ -142,6 +150,8 @@ async def _ask_assignee(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def assignee_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if context.user_data.get("awaiting_done_id"):
+        return await _handle_awaiting_done(update, context)
     assignee_raw = update.message.text.strip()
     user_data = get_user_by_username(assignee_raw)
     context.user_data["assignee_id"] = user_data["user_id"] if user_data else None
@@ -172,6 +182,8 @@ async def assignee_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def add_title(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if context.user_data.get("awaiting_done_id"):
+        return await _handle_awaiting_done(update, context)
     text = update.message.text.strip()
     parts = [p.strip() for p in re.split(r"\s*/\s*", text)]
 
@@ -204,6 +216,8 @@ async def skip_description(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def add_description(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if context.user_data.get("awaiting_done_id"):
+        return await _handle_awaiting_done(update, context)
     text = update.message.text.strip()
     parts = [p.strip() for p in re.split(r"\s*/\s*", text)]
 
@@ -218,6 +232,28 @@ async def add_description(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["description"] = text
     await update.message.reply_text(ASK_DEADLINE)
     return DEADLINE
+
+
+async def _handle_awaiting_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        task_id = int(update.message.text.strip())
+    except ValueError:
+        await update.message.reply_text(INVALID_ID)
+        return
+    task = get_task(task_id)
+    if not task:
+        await update.message.reply_text(TASK_NOT_FOUND.format(id=task_id))
+        return
+    context.user_data.pop("awaiting_done_id", None)
+    user_id = update.effective_user.id
+    role = _get_role(user_id)
+    if role == "admin" or _can_approve(user_id, task):
+        update_task_status(task_id, "done")
+        await update.message.reply_text(TASK_DONE.format(id=task_id))
+    else:
+        update_task_status(task_id, "pending_approval")
+        await update.message.reply_text(DONE_SENT_TO_ADMIN)
+        await _notify_approvers(context, task)
 
 
 async def _finish_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -292,7 +328,13 @@ async def list_tasks_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
 async def done_task_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         task_id = int(context.args[0])
-    except (IndexError, ValueError):
+    except IndexError:
+        context.user_data["awaiting_done_id"] = True
+        await update.message.reply_text(
+            "📋 Напишите ID задачи, которую выполнили:"
+        )
+        return
+    except ValueError:
         await update.message.reply_text(INVALID_ID)
         return
 
@@ -615,6 +657,21 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await query.edit_message_text(TASK_NOT_FOUND.format(id=task_id))
 
+    # Menu buttons
+    elif data == "menu_list":
+        await query.answer()
+        await list_tasks_handler(update, context)
+    elif data == "menu_done":
+        await query.answer()
+        context.user_data["awaiting_done_id"] = True
+        await query.message.reply_text("📋 Напишите ID задачи (например: 3):")
+    elif data == "menu_overdue":
+        await query.answer()
+        await overdue_handler(update, context)
+    elif data == "menu_help":
+        await query.answer()
+        await query.message.reply_text(HELP_TEXT)
+
 
 # ── Handlers list ───────────────────────────────────────
 
@@ -642,6 +699,7 @@ def get_handlers():
     return [
         CommandHandler("start", start),
         CommandHandler("help", help_command),
+        CommandHandler("menu", menu_command),
         conv_handler,
         CommandHandler("list", list_tasks_handler),
         CommandHandler("done", done_task_handler),

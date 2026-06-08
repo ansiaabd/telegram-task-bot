@@ -19,6 +19,15 @@ def approval_keyboard(task_id: int) -> InlineKeyboardMarkup:
     ])
 
 
+def menu_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("📋 Мои задачи", callback_data="menu_list")],
+        [InlineKeyboardButton("✅ Выполнено", callback_data="menu_done")],
+        [InlineKeyboardButton("⏰ Просрочки", callback_data="menu_overdue")],
+        [InlineKeyboardButton("📖 Все команды", callback_data="menu_help")],
+    ])
+
+
 def user_picker_keyboard(users: list[dict], current_user_id: int) -> InlineKeyboardMarkup:
     keyboard = [
         [InlineKeyboardButton("👤 Себя", callback_data="assignee_self")],
