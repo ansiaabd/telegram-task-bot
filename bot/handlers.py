@@ -172,13 +172,14 @@ async def _ask_project(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "📁 Выберите проект:",
             reply_markup=project_picker_keyboard(_yougile_projects_cache),
         )
-    else:
-        await update.message.reply_text(
-            "❌ Не удалось загрузить проекты из Yougile.\n"
-            "Проверьте API-ключ в настройках."
-        )
-        return ConversationHandler.END
-    return PROJECT
+        return PROJECT
+    # Yougile недоступен — создаём локальную задачу
+    context.user_data["yougile_project_id"] = ""
+    context.user_data["yougile_project_title"] = ""
+    await update.message.reply_text(
+        "⚠️ Yougile недоступен. Задача будет создана локально.",
+    )
+    return await _ask_assignee(update, context)
 
 
 async def project_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
