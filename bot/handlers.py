@@ -316,11 +316,18 @@ async def _handle_awaiting_done(update: Update, context: ContextTypes.DEFAULT_TY
         await update.message.reply_text(TASK_NOT_FOUND.format(id=task_id))
         return
     context.user_data.pop("awaiting_done_id", None)
-    update_task_status(task_id, "done")
-    _sync_yougile_done(task)
-    await update.message.reply_text(TASK_DONE.format(id=task_id))
-    context.user_data["awaiting_done_comment"] = task_id
-    await update.message.reply_text(DONE_AWAITING_COMMENT)
+    user_id = update.effective_user.id
+
+    if _can_approve(user_id, task):
+        update_task_status(task_id, "done")
+        _sync_yougile_done(task)
+        await update.message.reply_text(TASK_DONE.format(id=task_id))
+    else:
+        update_task_status(task_id, "pending_approval")
+        _sync_yougile_review(task, update.effective_user)
+        await update.message.reply_text(TASK_DONE.format(id=task_id))
+        context.user_data["awaiting_done_comment"] = task_id
+        await update.message.reply_text(DONE_AWAITING_COMMENT)
 
 
 async def _finish_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -660,11 +667,18 @@ async def done_task_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(TASK_NOT_FOUND.format(id=task_id))
         return
 
-    update_task_status(task_id, "done")
-    _sync_yougile_done(task)
-    await update.message.reply_text(TASK_DONE.format(id=task_id))
-    context.user_data["awaiting_done_comment"] = task_id
-    await update.message.reply_text(DONE_AWAITING_COMMENT)
+    user_id = update.effective_user.id
+
+    if _can_approve(user_id, task):
+        update_task_status(task_id, "done")
+        _sync_yougile_done(task)
+        await update.message.reply_text(TASK_DONE.format(id=task_id))
+    else:
+        update_task_status(task_id, "pending_approval")
+        _sync_yougile_review(task, update.effective_user)
+        await update.message.reply_text(TASK_DONE.format(id=task_id))
+        context.user_data["awaiting_done_comment"] = task_id
+        await update.message.reply_text(DONE_AWAITING_COMMENT)
 
 
 async def _notify_approvers(context: ContextTypes.DEFAULT_TYPE, task: dict):
@@ -903,11 +917,19 @@ async def done_natural_number(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 async def _request_done_approval(update: Update, context: ContextTypes.DEFAULT_TYPE, task: dict):
     task_id = task["id"]
-    update_task_status(task_id, "done")
-    _sync_yougile_done(task)
-    await update.message.reply_text(TASK_DONE.format(id=task_id))
-    context.user_data["awaiting_done_comment"] = task_id
-    await update.message.reply_text(DONE_AWAITING_COMMENT)
+    user_id = update.effective_user.id
+
+    if _can_approve(user_id, task):
+        update_task_status(task_id, "done")
+        _sync_yougile_done(task)
+        await update.message.reply_text(TASK_DONE.format(id=task_id))
+    else:
+        update_task_status(task_id, "pending_approval")
+        _sync_yougile_review(task, update.effective_user)
+        await update.message.reply_text(TASK_DONE.format(id=task_id))
+        context.user_data["awaiting_done_comment"] = task_id
+        await update.message.reply_text(DONE_AWAITING_COMMENT)
+        await _notify_approvers(context, task)
 
 
 # ── Callback (buttons) ───────────────────────────────────
@@ -976,11 +998,16 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not task:
             await query.edit_message_text(TASK_NOT_FOUND.format(id=task_id))
             return
-        update_task_status(task_id, "done")
-        _sync_yougile_done(task)
-        await query.edit_message_text(TASK_DONE.format(id=task_id))
-        context.user_data["awaiting_done_comment"] = task_id
-        await query.message.reply_text(DONE_AWAITING_COMMENT)
+        if _can_approve(user_id, task):
+            update_task_status(task_id, "done")
+            _sync_yougile_done(task)
+            await query.edit_message_text(TASK_DONE.format(id=task_id))
+        else:
+            update_task_status(task_id, "pending_approval")
+            _sync_yougile_review(task, update.effective_user)
+            await query.edit_message_text(TASK_DONE.format(id=task_id))
+            context.user_data["awaiting_done_comment"] = task_id
+            await query.message.reply_text(DONE_AWAITING_COMMENT)
 
     elif data.startswith("approve_"):
         task_id = int(data.split("_")[1])
