@@ -22,6 +22,9 @@ def _migrate(conn):
     }
     if "role" not in existing_cols:
         conn.execute("ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'user'")
+    if "yougile_user_id" not in existing_cols:
+        conn.execute("ALTER TABLE users ADD COLUMN yougile_user_id TEXT DEFAULT ''")
+        conn.execute("ALTER TABLE users ADD COLUMN email TEXT DEFAULT ''")
 
     existing_cols = {
         r["name"]
@@ -29,6 +32,13 @@ def _migrate(conn):
     }
     if "created_by" not in existing_cols:
         conn.execute("ALTER TABLE tasks ADD COLUMN created_by INTEGER DEFAULT NULL")
+    if "done_comment" not in existing_cols:
+        conn.execute("ALTER TABLE tasks ADD COLUMN done_comment TEXT DEFAULT ''")
+        conn.execute("ALTER TABLE tasks ADD COLUMN done_file_id TEXT DEFAULT ''")
+        conn.execute("ALTER TABLE tasks ADD COLUMN done_file_type TEXT DEFAULT ''")
+    if "yougile_project_id" not in existing_cols:
+        conn.execute("ALTER TABLE tasks ADD COLUMN yougile_project_id TEXT DEFAULT ''")
+        conn.execute("ALTER TABLE tasks ADD COLUMN yougile_task_id TEXT DEFAULT ''")
 
 
 # ── Users ────────────────────────────────────────────────
@@ -98,6 +108,34 @@ def delete_user(user_id: int) -> bool:
     deleted = cur.rowcount > 0
     conn.close()
     return deleted
+
+
+def set_user_yougile(user_id: int, yougile_user_id: str, email: str):
+    conn = get_connection()
+    conn.execute(
+        "UPDATE users SET yougile_user_id = ?, email = ? WHERE user_id = ?",
+        (yougile_user_id, email, user_id),
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_yougile_user_id(tg_user_id: int) -> str:
+    conn = get_connection()
+    row = conn.execute(
+        "SELECT yougile_user_id FROM users WHERE user_id = ?", (tg_user_id,)
+    ).fetchone()
+    conn.close()
+    return row["yougile_user_id"] if row and row["yougile_user_id"] else ""
+
+
+def get_user_by_yougile_id(yougile_user_id: str) -> Optional[dict]:
+    conn = get_connection()
+    row = conn.execute(
+        "SELECT * FROM users WHERE yougile_user_id = ?", (yougile_user_id,)
+    ).fetchone()
+    conn.close()
+    return dict(row) if row else None
 
 
 # ── Tasks ────────────────────────────────────────────────
@@ -175,7 +213,7 @@ def update_task_status(task_id: int, status: str) -> bool:
 
 
 def update_task_field(task_id: int, field: str, value: str) -> bool:
-    allowed = {"title", "description", "assignee", "assignee_id", "deadline", "status", "calendar_event_id"}
+    allowed = {"title", "description", "assignee", "assignee_id", "deadline", "status", "calendar_event_id", "done_comment", "done_file_id", "done_file_type", "yougile_project_id", "yougile_task_id"}
     if field not in allowed:
         raise ValueError(f"Field '{field}' is not allowed")
     conn = get_connection()
@@ -230,5 +268,24 @@ def list_pending_approval(user_id: Optional[int] = None, role: str = "admin") ->
         ).fetchall()
     else:
         rows = conn.execute("SELECT * FROM tasks WHERE 0").fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def get_task_by_yougile_id(yougile_task_id: str) -> Optional[dict]:
+    conn = get_connection()
+    row = conn.execute(
+        "SELECT * FROM tasks WHERE yougile_task_id = ?", (yougile_task_id,)
+    ).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def list_active_tasks_by_project(yougile_project_id: str) -> list[dict]:
+    conn = get_connection()
+    rows = conn.execute(
+        "SELECT * FROM tasks WHERE yougile_project_id = ? AND status != 'done' ORDER BY deadline",
+        (yougile_project_id,),
+    ).fetchall()
     conn.close()
     return [dict(r) for r in rows]

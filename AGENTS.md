@@ -2,10 +2,12 @@
 
 ## Project
 Telegram-бот для управления задачами с ролями (админ, модератор, пользователь), подтверждением выполнения и уведомлениями.
+Интеграция с Yougile (https://ru.yougile.com) — двусторонняя синхронизация задач.
 
-## Current State (8 June 2026)
+## Current State
 - Bot running with PID from start.sh
 - All implemented features are stable
+- Yougile integration active
 
 ## How to start a new session
 
@@ -17,87 +19,96 @@ Telegram-бот для управления задачами с ролями (а
 ## Structure
 
 ```
-├── main.py              # Entry point
+├── main.py              # Entry point (bot + webhook server)
 ├── config.py            # .env config
 ├── bot/
 │   ├── handlers.py      # All command/button handlers
 │   ├── messages.py      # Message templates
 │   └── keyboards.py     # Inline keyboards
 ├── db/
-│   ├── schema.sql       # DDL (users: role column, tasks: created_by)
+│   ├── schema.sql       # DDL (users, tasks with yougile fields)
 │   ├── crud.py          # DB operations
 │   └── __init__.py      # SQLite connection (WAL mode)
 ├── scheduler/
 │   └── tasks.py         # Overdue check via JobQueue (60s)
 ├── utils/
 │   └── date_parser.py   # Russian date parser
-├── .env                 # BOT_TOKEN, ADMIN_ID
-├── tasks.db             # SQLite DB (created on first run)
+├── yougile/
+│   ├── __init__.py
+│   ├── .env             # Yougile credentials
+│   ├── config.py        # Reads YOUGILE_* from .env
+│   ├── client.py        # Yougile API client (httpx)
+│   └── webhook.py       # HTTP server for Yougile → Telegram sync
+├── .env                 # BOT_TOKEN, ADMIN_ID, YOUGILE_*
+├── tasks.db             # SQLite DB
 └── docs/spec.md         # Tech spec
 ```
 
-## Key files & line numbers (bot/handlers.py)
-- `add_start:80` — entry point (inline format + conversation)
-- `_ask_assignee:145` — shows user picker buttons
-- `assignee_text:157` — text @username input
-- `assignee_callback:165` — inline button user selection
-- `add_title:183` — title input (also parses inline "title/desc/deadline")
-- `add_description:210` — description input
-- `_finish_task:228` — creates the task in DB
-- `button_callback:380` — all inline button actions
-- `_notify_approvers:250` — sends approval requests to admin + creator
-- `get_handlers:530` — register all handlers
+## Yougile Integration
 
-## Roles
-- **ADMIN_ID** = 798479064 (from .env)
-- Role stored in `users.role`: `'admin'`, `'moderator'`, `'user'` (default)
-- `_get_role(user_id)` — helper, returns 'admin' for ADMIN_ID
-- `_can_approve(user_id, task)` — checks admin or task creator
+### Flow (Telegram → Yougile)
+1. **Создание задачи**: `/add` → выбор проекта (из Yougile) → исполнитель → название/описание/дедлайн → задача создаётся в Yougile на доске **«Задачи»**
+2. **Взял в работу**: `/take <id>` → задача в Yougile перемещается на доску **«В работе»**
+3. **Выполнено**: `/done <id>` → задача в Yougile → **«На проверке»**, добавляется комментарий с результатом
+4. **Подтверждение**: admin approve → задача в Yougile → **«Готово»**, `completed=true`
+5. **Отклонение**: admin reject → задача в Yougile → **«В работе»**, добавляется комментарий
+
+### Flow (Yougile → Telegram)
+- Yougile присылает webhook на `http://server:8787/webhook`
+- Обрабатываются события: task-created, task-moved, task-renamed, task-updated (completed)
+
+### Доски в проекте Yougile (обязательны)
+| Название доски | Назначение |
+|---|---|
+| Задачи | Новые задачи из бота |
+| В работе | Исполнитель взял задачу |
+| На проверке | Ожидает подтверждения |
+| Готово | Выполнено |
+
+## Key files & line numbers
+
+### yougile/client.py
+- `get_board_mapping(project_id)` — находит доски по названиям
+- `create_task_in_project(...)` — создаёт задачу в доске «Задачи»
+- `move_to_board(task_id, project_id, board_name)` — перемещает между досками
+- `send_message(task_id, text)` — комментарий к задаче
+- `set_completed(task_id)` — отметить выполненной
+
+### yougile/webhook.py
+- `WebhookServer` — HTTP сервер на порту 8787
+- `handle_webhook_event` — обработка событий Yougile
+
+### bot/handlers.py
+- `PROJECT = 4` — новое состояние разговора
+- `add_start:111` — загружает проекты, переход к _ask_project
+- `project_callback:152` — выбор проекта
+- `_finish_task:320` — создание задачи в Yougile
+- `take_task_handler:446` — /take команда
+- `_sync_yougile_*` — синхронизация с Yougile
+- `setup_webhooks_handler:453` — создание webhook-ов в Yougile
+- `get_handlers:967` — регистрация всех handler-ов
 
 ## Commands
 | Command | Who | Description |
 |---------|-----|-------------|
-| /start | All | Register / greeting |
-| /add | All | Create task (assignee first → title → desc → deadline) |
-| /list | All | My tasks (admin sees all, mod sees assigned+created) |
-| /list all | Admin | All tasks |
-| /done <id> | All | Mark done (admins/mods approve own) |
+| /add | All | Create task (project → assignee → title → desc → deadline) |
+| /take <id> | All | Take task into work (→ «В работе») |
+| /done <id> | All | Mark done / send to review |
 | /delete <id> | All | Delete task |
-| /overdue | All | Overdue tasks (role-filtered) |
+| /list | All | My tasks |
+| /overdue | All | Overdue tasks |
 | /pending | Admin+Mod | Tasks awaiting approval |
-| /users | Admin | List users with roles |
-| /removeuser <id> | Admin | Remove user |
-| /promote <id> | Admin | Set moderator role |
-| /demote <id> | Admin | Remove moderator role |
+| /setup_webhooks <url> | Admin | Create Yougile webhooks |
+| /users | Admin | List users |
+| /promote /demote /removeuser | Admin | User management |
 | /cancel | All | Cancel conversation |
 | /help | All | Help |
 
-## Inline (one-line) format
-- `задача / title / deadline / @assignee`
-- `задача / title / description / deadline / @assignee`
-- `задача title / deadline / @assignee` (with space after "задача")
-- Deadline can be in any position after title (scans all parts)
-- Trigger words: "задача", "/add"
-
-## Natural language
-- «выполнено» / «сделано» / «готово» — mark task as done (if only 1 active task)
-
-## Approval flow
-1. Executor marks done → status = `pending_approval`
-2. `_notify_approvers` sends to task creator AND admin
-3. Creator or admin clicks approve/reject → status = `done` / `active`
-
-## Conversation flow
-1. ASSIGNEE: pick user (inline buttons) or type @username
-2. TITLE: type title (or "title/desc/deadline" inline)
-3. DESCRIPTION: type description (or "desc/deadline" inline)
-4. DEADLINE: type deadline → task created
-
-## Pending / postponed
-- Voice message processing (speech-to-text) — not implemented yet
-- Calendar sync (Google/Outlook) — not implemented
+## To start integration after first setup
+1. Run bot: `python main.py`
+2. In Telegram, run: `/setup_webhooks https://your-ngrok-url.ngrok-free.app`
+3. Bot now syncs bidirectionally with Yougile
 
 ## Known issues
-- If the bot crashes or gets killed, wait ~5 seconds before restarting (Telegram API conflict)
-- After DB drop, all users must re-register via /start
-- `/done` by executor always requires admin/moderator approval
+- Yougile file upload not yet implemented (only text comments)
+- Webhook server requires public URL (ngrok in dev)

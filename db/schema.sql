@@ -17,5 +17,10 @@ CREATE TABLE IF NOT EXISTS tasks (
     created_by INTEGER DEFAULT NULL,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     calendar_event_id TEXT DEFAULT NULL,
+    done_comment TEXT DEFAULT '',
+    done_file_id TEXT DEFAULT '',
+    done_file_type TEXT DEFAULT '',
+    yougile_project_id TEXT DEFAULT '',
+    yougile_task_id TEXT DEFAULT '',
     FOREIGN KEY (assignee_id) REFERENCES users(user_id)
 );
