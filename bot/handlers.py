@@ -67,7 +67,10 @@ async def notify_assignee(context: ContextTypes.DEFAULT_TYPE, task_id: int, titl
         return
     text = NEW_TASK_NOTIFICATION.format(id=task_id, title=title, deadline=deadline, assignee=assignee)
     try:
-        await context.bot.send_message(chat_id=assignee_id, text=text, parse_mode="HTML")
+        await context.bot.send_message(
+            chat_id=assignee_id, text=text, parse_mode="HTML",
+            reply_markup=task_actions_keyboard(task_id, "active"),
+        )
     except Exception:
         pass
 
