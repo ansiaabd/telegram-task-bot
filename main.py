@@ -20,6 +20,7 @@ async def _post_init(app: Application):
         BotCommand("take", "Взять задачу в работу"),
         BotCommand("menu", "Быстрое меню"),
         BotCommand("setup_project", "Создать доски Yougile в проектах"),
+        BotCommand("create_project", "Создать проект в Yougile"),
         BotCommand("setup_webhooks", "Настроить webhook Yougile"),
         BotCommand("cancel", "Отменить создание"),
         BotCommand("help", "Все команды"),

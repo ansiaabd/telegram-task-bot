@@ -550,6 +550,31 @@ async def setup_project_handler(update: Update, context: ContextTypes.DEFAULT_TY
         await update.message.reply_text(f"❌ Ошибка: {e}")
 
 
+async def create_project_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        await update.message.reply_text(ADMIN_ONLY)
+        return
+    name = ' '.join(context.args).strip()
+    if not name:
+        await update.message.reply_text("❌ Укажите название: /create_project Название проекта")
+        return
+    try:
+        project = yougile._request('POST', 'projects', {'title': name})
+        pid = project['id']
+        board = yougile._request('POST', 'boards', {'title': 'Доска', 'projectId': pid})
+        bid = board['id']
+        for col_name in ['Задачи', 'В работе', 'На проверке', 'Готово']:
+            yougile._request('POST', 'columns', {'title': col_name, 'boardId': bid})
+        _yougile_projects_cache.append({'id': pid, 'title': name})
+        await update.message.reply_text(
+            f"✅ Проект <b>{name}</b> создан!\n"
+            f"Колонки: Задачи → В работе → На проверке → Готово",
+            parse_mode="HTML",
+        )
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка: {e}")
+
+
 # ── Link email (привязать email к Telegram) ─────────────
 
 async def link_email_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1122,6 +1147,7 @@ def get_handlers():
         CommandHandler("demote", demote_handler),
         CommandHandler("setup_webhooks", setup_webhooks_handler),
         CommandHandler("setup_project", setup_project_handler),
+        CommandHandler("create_project", create_project_handler),
         CommandHandler("link_email", link_email_handler),
         MessageHandler(filters.Regex(r"(?i)^(выполнено|сделано|готово)$") & ~filters.COMMAND, done_natural),
         MessageHandler(filters.Regex(r"^\d+$") & ~filters.COMMAND, done_natural_number),
