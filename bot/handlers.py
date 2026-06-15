@@ -565,7 +565,6 @@ async def create_project_handler(update: Update, context: ContextTypes.DEFAULT_T
         bid = board['id']
         for col_name in ['Задачи', 'В работе', 'На проверке', 'Готово']:
             yougile._request('POST', 'columns', {'title': col_name, 'boardId': bid})
-        _yougile_projects_cache.append({'id': pid, 'title': name})
         await update.message.reply_text(
             f"✅ Проект <b>{name}</b> создан!\n"
             f"Колонки: Задачи → В работе → На проверке → Готово",
