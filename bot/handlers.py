@@ -559,7 +559,11 @@ async def create_project_handler(update: Update, context: ContextTypes.DEFAULT_T
         await update.message.reply_text("❌ Укажите название: /create_project Название проекта")
         return
     try:
-        project = yougile._request('POST', 'projects', {'title': name})
+        admin_yid = get_yougile_user_id(update.effective_user.id)
+        project_kwargs = {'title': name}
+        if admin_yid:
+            project_kwargs['users'] = {admin_yid: 'admin'}
+        project = yougile._request('POST', 'projects', project_kwargs)
         pid = project['id']
         board = yougile._request('POST', 'boards', {'title': 'Доска', 'projectId': pid})
         bid = board['id']
